@@ -59,3 +59,16 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 	- Suppressed a spurious warning on ccperl.
 	- Added CLEARCASE_CLEARPROMPT_DEBUG_SHELL option for convenience
 	  in debugging trigger environments.
+
+1.25 Fri Dec 21 23:45:35 EST 2001
+	- COMPATIBILITY ALERT:
+	    - The capture-to-dialog and capture-to-email lists are now
+	    discrete. This means that C<+WARN> will capture warnings to
+	    a dialog box, while C<+WARN=joe> will send warnings to
+	    joe but NOT to a dialog box.  To get both you must now
+	    request both, e.g. C<+WARN +WARN=vobadm>. See POD for
+	    more details. This is in response to a new feature in
+	    CC 4.2.
+	- Added use of the 'notify' program to send email as a
+	  fallback in case Net::SMTP fails.
+	- Added '+PROMPT' feature.

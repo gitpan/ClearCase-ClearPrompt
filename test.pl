@@ -48,16 +48,22 @@ my $rc;
 my @yes_no = qw(yes_no -pref -mask yes,no -type ok -prompt);
 
 ## Test 2
-my $msg2 = qq(A simple test\n(of clearprompt proceed ...));
+my $msg2 = qq(A simple test\n(with embedded newline ...));
 $rc = clearprompt(qw(proceed -type ok -mask p -pref -pro), "$msg2");
-my $pre2 = qq(Test 2: Did you just see a dialog box saying '$msg2'?);
+my $pre2 = qq(Test 2: Did you just see a dialog saying '$msg2'?);
 $rc = clearprompt(@yes_no, $pre2);
 print ok($rc == 0);
 
 ## Test 3
 my $msg3 = qq(Testing asynchronous use of clearprompt());
 clearprompt(qw(proceed -type ok -mask p -pref -pro), "\n\n\n$msg3 ...\n\n\n");
-my $pre3 = qq(Test 3: Do you see another dialog box saying '$msg3'?);
+# Wait so GUI boxes get stacked in right order ...
+if ($] <= 5.001) {
+    sleep(1);
+} else {
+    select(undef, undef, undef, 0.25);
+}
+my $pre3 = qq(Test 3: Do you see another dialog saying '$msg3'?);
 $rc = clearprompt(@yes_no, $pre3);
 print ok($rc == 0);
 
@@ -67,12 +73,17 @@ my $msg4 = qq(Test 4: testing return codes - please press 'Yes');
 $rc = clearprompt(@args4, $msg4);
 print ok($rc == 0);
 
+my $name = $ENV{LOGNAME} || $ENV{USER} || $ENV{USERNAME};
+print qq(Sending following prompt conversations to '$name' by email ...\n);
+ClearCase::ClearPrompt->import("+PROMPT=$name");
+
 # This sequence tests text input and also "trigger series" stashing.
 {
     local %ENV = %ENV;
     $ENV{CLEARCASE_SERIES_ID} = 'a1:b2:c3:d4';
 
     my($ptext, $prc);
+    my $pmsg = "you entered";
     for my $seq (1..3) {
 	$ENV{CLEARCASE_BEGIN_SERIES} = $seq == 1;
 	$ENV{CLEARCASE_END_SERIES} =   $seq == 3;
@@ -83,14 +94,17 @@ print ok($rc == 0);
 	Please type some characters at the prompt:);
 	my $data = clearprompt(@testx, $msgx);
 	$data =~ s/"/'/g if MSWIN;
-	print qq(At text prompt #$seq you entered '$data'.\n);
+	print qq(At text prompt #$seq $pmsg '$data'.\n);
 	print ok(defined($data) && (!defined($ptext) || $ptext eq $data));
 	$ptext = $data;
 
+	my @rcnames = ('Yes', 'No', MSWIN ? 'Cancel' : 'Abort');
 	my $rcx = clearprompt(qw(yes_no -type ok -pro), "Choose any response");
-	my $rcname = qw(Yes No Abort)[$rcx];
-	print qq(At proceed prompt #$seq you entered '$rcname'.\n);
-	print ok(defined($rcname) && (!defined($prc) || $prc eq $rcname));
+	my $rcname = $rcnames[$rcx];
+	print qq(At proceed prompt #$seq $pmsg '$rcname'.\n);
+	my $yay = defined($rcname) && (!defined($prc) || $prc eq $rcname);
+	print ok($yay);
+	$pmsg = "*REPLAYING*" if $yay;
 	$prc = $rcname;
     }
 }

@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.24';
+$VERSION = $VERSION = '1.25';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -24,13 +24,15 @@ use vars qw($TriggerSeries $StashFile);
 $TriggerSeries = $ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES};
 
 # Make $CT read-only but not a constant so it can be interpolated.
-*CT = \ccpath('cleartool');
+*CT = *CT = \ccpath('cleartool');	# double assignment suppresses warning
 
 if ($] > 5.004) {
     use strict;
     eval "use subs 'die'";  # We override this and may also export it to caller
 }
 
+my %Dialogs = ();
+my %Mailings = ();
 my %MailTo = (); # accumulates lists of users to mail various msgs to.
 
 (my $prog = $0) =~ s%.*[/\\]%%;
@@ -95,24 +97,31 @@ sub clearprompt {
     # are satisfied. It seems that CC sets the series id to all zeroes
     # after an error condition (??) so we avoid that case explicitly.
     my $lineno = (caller)[2];
+    my $subtext = "from $prog:$lineno";
     if ($TriggerSeries && $ENV{CLEARCASE_SERIES_ID} &&
 				    $ENV{CLEARCASE_SERIES_ID} !~ /^[0:.]+$/) {
 	(my $sid = $ENV{CLEARCASE_SERIES_ID}) =~ s%:+%-%g;
 	$StashFile = tempname($prog, "CLEARCASE_SERIES_ID=$sid");
 	if (!$ENV{CLEARCASE_BEGIN_SERIES} && -f $StashFile) {
 	    do $StashFile;
-	    if ($ENV{CLEARCASE_END_SERIES}) {
+	    if ($ENV{CLEARCASE_END_SERIES} &&
+				    !$ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
 		# We delay the unlink due to weird  Windows locking behavior
 		eval "END { unlink '$StashFile' }";
 	    }
 	    no strict 'vars';
-	    return eval "\$stash$lineno";
+	    my $data = eval "\$stash$lineno";
+	    _automail('PROMPT', "Replay $subtext", "REPLAY:\n",
+			    defined($data) ? $data : 'undef');
+	    return $data;
 	}
     }
 
     # On Windows we must add an extra level of escaping to any args
     # which might have special chars since all forms of system()
-    # appear to go through the %^%@# cmd shell (boo!).
+    # appear to go through the %^%@# cmd shell (boo!). This is
+    # also handled by Perl 5.6.1, ActiveState build 630 but it will
+    # be a long time till we can count on that fix being present.
     if (MSWIN()) {
 	for (0..$#args) {
 	    my $i = $_;
@@ -150,6 +159,8 @@ sub clearprompt {
 	    $data = undef if $? && $? <= 0x80;
 	}
 	unlink $outf if -f $outf;
+	_automail('PROMPT', "Prompt $subtext", "PROMPT:\n", "@cmd\n",
+			    "\nRESPONSE:\n", defined($data) ? $data : 'undef');
     } else {
 	my @cmd = (ccpath('clearprompt'), $mode, @args);
 	print STDERR "+ @cmd\n" if $ClearCase::ClearPrompt::Verbose;
@@ -157,13 +168,25 @@ sub clearprompt {
 	    system(@cmd);
 	    $? = 2 if $? == 0x400;  # see above
 	    $data = ($? && $? <= 0x80) ? undef : $?>>8;
+	    _automail('PROMPT', "Prompt $subtext", "PROMPT:\n",
+		"@cmd\n", "\nRESPONSE:\n", defined($data) ? $data : 'undef');
 	} else {
+	    _automail('PROMPT', "Prompt $subtext", "PROMPT:\n", "@cmd\n");
 	    if (MSWIN()) {
+		# Windows (always) GUI - fork new thread to run async
 		system(1, @cmd);
 		return;
-	    } else {
+	    } elsif (exists $ENV{DISPLAY}) {
+		# Unix GUI - must fork to run async
 		return if fork;
 		exec(@cmd);
+	    } else {
+		# Unix cmd line - must close stdin to run async
+		open(SAVE_STDIN, ">&STDIN");
+		close(STDIN);
+		system(@cmd);
+		open(STDIN, ">&SAVE_STDIN");
+		close(SAVE_STDIN);
 	    }
 	}
     }
@@ -171,12 +194,15 @@ sub clearprompt {
     # Record responses if $TriggerSeries is turned on.
     if ($StashFile) {
 	if ($ENV{CLEARCASE_BEGIN_SERIES} && !$ENV{CLEARCASE_END_SERIES}) {
+	    my $top = ! -f $StashFile;
 	    require Data::Dumper;
 	    open(STASH, ">>$StashFile") || die "$prog: $StashFile: $!";
-	    print STASH "# This file contains data stashed for $prog\n";
+	    print STASH "# This file contains data stashed for $prog\n" if $top;
 	    print STASH Data::Dumper->new([$data], ["stash$lineno"])->Dump;
 	    close(STASH);
-	    $SIG{INT} = sub { unlink $StashFile };
+	    if (! $ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
+		$SIG{INT} = sub { unlink $StashFile };
+	    }
 	}
     }
 
@@ -289,41 +315,56 @@ sub redirect {
 # I.e. a ref to a list of email addresses followed by a string
 # scalar containing the subject. Remaining parameters are used
 # as the body of the message. Returns true on successful delivery
-# of msg to the MTA; subsequent delivery is not guaranteed.
+# of msg to the MTA.
 sub sendmsg {
     my($r_to, $subj, @body) = @_;
     # If no mailto list, no mail.
-    return 0 unless @$r_to;
+    return 1 unless @$r_to;
+
     # Only drag Net::SMTP in at runtime since it's not core perl.
     eval { require Net::SMTP };
-    return $@ if $@;
-    my $smtp = Net::SMTP->new;	# assumes Net::SMTP Config.pm is set up right
-    return 2 unless defined $smtp;
-    local $^W = 0; # hide a spurious warning - from deep in Net::SMTP maybe??
-    $smtp->mail($ENV{CLEARCASE_USER} || $ENV{USERNAME} || $ENV{LOGNAME}) &&
-	$smtp->to(@$r_to, {SkipBad => 1}) &&
-	$smtp->data() &&
-	$smtp->datasend("To: @$r_to\n") &&
-	$smtp->datasend("Subject: $subj\n") &&
-	$smtp->datasend("X-Mailer: $prog\n") &&
-	$smtp->datasend("\n") &&
-	$smtp->datasend(@body) &&
-	$smtp->dataend() &&
-	$smtp->quit;
+    if (! $@) {
+	my $name = $ENV{CLEARCASE_USER} || $ENV{USERNAME} || $ENV{LOGNAME};
+	my $smtp = Net::SMTP->new;
+	if ($smtp) {
+	    local $^W = 0; # hide a spurious warning from deep in Net::SMTP
+	    $smtp->mail($name) &&
+		$smtp->to(@$r_to, {SkipBad => 1}) &&
+		$smtp->data() &&
+		$smtp->datasend("To: @$r_to\n") &&
+		$smtp->datasend("Subject: $subj\n") &&
+		$smtp->datasend(join(' ', 'X-Mailer:',__PACKAGE__,$VERSION)) &&
+		$smtp->datasend("\n") &&
+		$smtp->datasend(@body) &&
+		$smtp->dataend() &&
+		$smtp->quit &&
+		return 1;	# succeeded, so return
+	}
+    }
+
+    # If Net::SMTP isn't installed or didn't work, try notify.exe
+    my $notify = qq(notify -l triggers -s "$subj" ) .
+					    join(' ', map {qq("$_")} @$r_to);
+    if (open(NOTIFY, "| $notify")) {
+	print NOTIFY @body;
+	return close(NOTIFY);
+    }
+    return 0;	# failure
 }
 
 # A private wrapper over sendmsg() to reformat the subj/msg
 # appropriately for error message captures.
 sub _automail {
-   return 0 if defined $ENV{CLEARCASE_CLEARPROMPT_NO_SENDMSG};
-   my $type = shift;
-   my $addrs = shift;
-   return unless $addrs;
-   my $subj = shift;
-   # We don't need Sys::Hostname except in this situation, so ...
-   eval { require Sys::Hostname; };
-   $subj .= ' on ' . Sys::Hostname::hostname() . ' via ' . __PACKAGE__;
-   return sendmsg($addrs, $subj, @_);
+    return 0 if defined $ENV{CLEARCASE_CLEARPROMPT_NO_SENDMSG};
+    my $type = shift;
+    return unless exists $MailTo{$type} && $MailTo{$type};
+    my $addrs = $MailTo{$type};
+    my $subj = shift;
+    # We don't need Sys::Hostname except in this situation, so ...
+    eval { require Sys::Hostname; };
+    $subj .= ' on ' . Sys::Hostname::hostname() unless $@;
+    $subj .= ' via ' . __PACKAGE__;
+    sendmsg($addrs, $subj, @_);
 }
 
 # Warning: significant hackery here. Basically, normal-looking symbol
@@ -342,13 +383,34 @@ sub import {
     # Then separate it into "normal-looking" symbols to export into
     # caller's namespace and "commands" to deal with right here.
     # Also, provide our own implementation of export tags for qw(:all).
-    # I'd prefer not to support that any more but must for back compat.
+    # I'd prefer not to support that any more but do for back compat.
     my %exports = map { $_ => 1 } grep !/^[+:]/, @p;
-    my @tags = map {substr($_, 1)} grep /^:/, @p;
-    my %cmds = map {m%^.(\w+)=?(.*)%; $1 => $2 } grep /^\+/, @p;
+    my %tags = map {substr($_, 1) => 1} grep /^:/, @p;
+    my %cmds = map {m%^.(\w+)=?(.*)%; $1 => $2} grep /^\+/, @p;
+
+    # Allow trigger series stashing to be turned on at import time,
+    # but let the EV override.
+    if (exists($cmds{TRIGGERSERIES})) {
+	$ClearCase::ClearPrompt::TriggerSeries = 1
+			if !exists($ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES});
+	delete $cmds{TRIGGERSERIES};
+    }
+
+    # Allow this EV to override the capture list.
+    if ($ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST}) {
+	@p = split /\s+/, $ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST};
+	%cmds = map {m%^.(\w+)=?(.*)%; $1 => $2} grep /^\+/, @p;
+	for (split /\s+/, @p) {
+	    m%^.(\w+)=?(.*)%;
+	    $cmds{$1} = $2;
+	}
+    }
+
+    %Dialogs  = map {substr($_, 1) => 1} grep /^\+\w+$/, @p;
+    %Mailings = map {m%^.(\w+)=(.*)%; $1 => $2 } grep /^\+\w+=/, @p;
 
     # If :tags were requested, map them to their predefined export lists.
-    for (@tags) {
+    for (keys %tags) {
 	my $tag = $_;
 	next unless $EXPORT_TAGS{$tag};
 	for (@{$EXPORT_TAGS{$tag}}) {
@@ -357,7 +419,12 @@ sub import {
     }
 
     # Export the die func if its corresponding channel was requested.
-    $exports{'die'} = 1 if exists $cmds{DIE};
+    $exports{'die'} = 1 if exists($cmds{DIE}) ||
+				exists($cmds{CAPTURE}) || exists($cmds{ERRORS});
+
+    # Set up the override hook for warn() if requested.
+    $SIG{__WARN__} = \&cpwarn if exists($cmds{WARN}) ||
+				exists($cmds{CAPTURE}) || exists($cmds{ERRORS});
 
     # Export the non-cmd symbols, which may include die().
     my @shares = grep {!/:/} keys %exports;
@@ -377,55 +444,53 @@ sub import {
 	__PACKAGE__->export_to_level(1, $p[0], @shares);
     }
 
-    # Allow this EV to override the capture list.
-    if ($ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST}) {
-	%cmds = map {m%^.(\w+)=?(.*)%; $1 => $2 } grep /^\+/,
-			split /\s+/, $ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST};
-    }
-
-    # Allow trigger series stashing to be turned on at import time,
-    # but let the EV override.
-    $ClearCase::ClearPrompt::TriggerSeries = 1 if exists $cmds{TRIGGERSERIES}
-			&& !exists $ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES};
-
     # +CAPTURE grabs all forms of output while +ERRORS grabs only error
     # forms (meaning everything but stdout). NOTE: we must be very careful
-    # about the fact that %cmds may have keys which EXIST but whose
+    # about the fact that there may be keys which EXIST but whose
     # values are UNDEFINED.
-    if (exists($cmds{CAPTURE})) {
-	$cmds{WARN}	||= $cmds{CAPTURE};
-	$cmds{DIE}	||= $cmds{CAPTURE};
-	$cmds{STDERR}	||= $cmds{CAPTURE};
-	$cmds{STDOUT}	||= $cmds{CAPTURE};
-	delete $cmds{CAPTURE};
-    } elsif (exists($cmds{ERRORS})) {
-	$cmds{WARN}	||= $cmds{ERRORS};
-	$cmds{DIE}	||= $cmds{ERRORS};
-	$cmds{STDERR}	||= $cmds{ERRORS};
-	delete $cmds{ERRORS};
+    if (exists($Dialogs{CAPTURE})) {
+	$Dialogs{WARN}		||= $Dialogs{CAPTURE};
+	$Dialogs{DIE}		||= $Dialogs{CAPTURE};
+	$Dialogs{STDERR}	||= $Dialogs{CAPTURE};
+	$Dialogs{STDOUT}	||= $Dialogs{CAPTURE};
+	delete $Dialogs{CAPTURE};
+    } elsif (exists($Dialogs{ERRORS})) {
+	$Dialogs{WARN}		||= $Dialogs{ERRORS};
+	$Dialogs{DIE}		||= $Dialogs{ERRORS};
+	$Dialogs{STDERR}	||= $Dialogs{ERRORS};
+	delete $Dialogs{ERRORS};
+    }
+    if (exists($Mailings{CAPTURE})) {
+	$Mailings{WARN}		||= $Mailings{CAPTURE};
+	$Mailings{DIE}		||= $Mailings{CAPTURE};
+	$Mailings{STDERR}	||= $Mailings{CAPTURE};
+	$Mailings{STDOUT}	||= $Mailings{CAPTURE};
+	delete $Mailings{CAPTURE};
+    } elsif (exists($Mailings{ERRORS})) {
+	$Mailings{WARN}		||= $Mailings{ERRORS};
+	$Mailings{DIE}		||= $Mailings{ERRORS};
+	$Mailings{STDERR}	||= $Mailings{ERRORS};
+	delete $Mailings{ERRORS};
     }
 
-    # Set up the override hook for warn() if requested.
-    $SIG{__WARN__} = \&cpwarn if exists $cmds{WARN};
-
     # Set up the mailing lists for each channel as requested.
-    $MailTo{WARN}   = [split /,/, $cmds{WARN}]   if $cmds{WARN};
-    $MailTo{DIE}    = [split /,/, $cmds{DIE}]    if $cmds{DIE};
-    $MailTo{STDOUT} = [split /,/, $cmds{STDOUT}] if $cmds{STDOUT};
-    $MailTo{STDERR} = [split /,/, $cmds{STDERR}] if $cmds{STDERR};
+    $MailTo{WARN}	= [split /,/, $Mailings{WARN}]   if $Mailings{WARN};
+    $MailTo{DIE}	= [split /,/, $Mailings{DIE}]    if $Mailings{DIE};
+    $MailTo{STDOUT}	= [split /,/, $Mailings{STDOUT}] if $Mailings{STDOUT};
+    $MailTo{STDERR}	= [split /,/, $Mailings{STDERR}] if $Mailings{STDERR};
+    $MailTo{PROMPT}	= [split /,/, $Mailings{PROMPT}] if $Mailings{PROMPT};
 
     # Last, handle generic stdout and stderr unless the caller asks us not to.
-    if ($ENV{ATRIA_FORCE_GUI} &&
-			    (exists $cmds{STDOUT} || exists $cmds{STDERR})) {
+    if (exists($cmds{STDOUT}) || exists($cmds{STDERR})) {
 	my $tmpout = tempname('stdout');
 	my $tmperr = tempname('stderr');
 
 	# Connect stdout and stderr to temp files for later use in END {}.
-	if (exists $cmds{STDOUT}) {
+	if (exists($cmds{STDOUT}) && ($ENV{ATRIA_FORCE_GUI} || $cmds{STDOUT})) {
 	    open(HOLDOUT, '>&STDOUT');
 	    open(STDOUT, ">$tmpout") || warn "$tmpout: $!";
 	}
-	if (exists $cmds{STDERR}) {
+	if (exists($cmds{STDERR}) && ($ENV{ATRIA_FORCE_GUI} || $cmds{STDERR})) {
 	    open(HOLDERR, '>&STDERR');
 	    open(STDERR, ">$tmperr") || warn "$tmperr: $!";
 	}
@@ -453,10 +518,11 @@ sub import {
 		my @msg = <OUT>;
 		close(OUT);
 		if (@msg) {
-		    my $title = "STDOUT\n\n @msg";
-		    _automail('STDOUT', $MailTo{STDOUT},
-				"Stdout from $prog", @msg) if $MailTo{STDOUT};
-		    clearprompt(qw(proceed -type o -mask p -pref -pro), $title);
+		    _automail('STDOUT', "Stdout from $prog", @msg);
+		    if ($Dialogs{STDOUT}) {
+			my $t = "STDOUT\n\n @msg";
+			clearprompt(qw(proceed -type o -mask p -pref -pro), $t);
+		    }
 		}
 		if (!$ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
 		    # On Windows, we can't unlink this tempfile while
@@ -480,10 +546,11 @@ sub import {
 		    close(ERR);
 		}
 		if (@msg) {
-		    my $title = "STDERR\n\n @msg";
-		    _automail('STDERR', $MailTo{STDERR},
-				"Stderr from $prog", @msg) if $MailTo{STDERR};
-		    clearprompt(qw(proceed -type o -mask p -pref -pro), $title);
+		    _automail('STDERR', "Stderr from $prog", @msg);
+		    if ($Dialogs{STDERR}) {
+			my $t = "STDERR\n\n @msg";
+			clearprompt(qw(proceed -type o -mask p -pref -pro), $t);
+		    }
 		}
 		if (!$ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
 		    if (MSWIN()) {
@@ -497,7 +564,7 @@ sub import {
     }
 }
 
-# This is a pseudo warn() which is called via the $SIG{__WARN__} hook.
+# This is a pseudo warn() func which is called via the $SIG{__WARN__} hook.
 sub cpwarn {
     my @msg = @_;
     # always show line numbers if this dbg flag set
@@ -506,9 +573,8 @@ sub cpwarn {
 	chomp $msg[-1];
 	push(@msg, " at $file line $line.\n");
     }
-    _automail('WARN', $MailTo{WARN}, "Warning from $prog", @msg)
-							    if $MailTo{WARN};
-    if ($ENV{ATRIA_FORCE_GUI}) {
+    _automail('WARN', "Warning from $prog", @msg);
+    if ($ENV{ATRIA_FORCE_GUI} && $Dialogs{WARN}) {
 	clearprompt(qw(proceed -type w -mask p -pref -pro), "WARNING\n\n@msg");
 	return undef; 	# to keep clearprompt() in void context
     } else {
@@ -525,9 +591,8 @@ sub die {
 	chomp $msg[-1];
 	push(@msg, " at $file line $line.\n");
     }
-    _automail('DIE', $MailTo{DIE}, "Error from $prog", @msg)
-							    if $MailTo{DIE};
-    if ($ENV{ATRIA_FORCE_GUI}) {
+    _automail('DIE', "Error from $prog", @msg);
+    if ($ENV{ATRIA_FORCE_GUI} && $Dialogs{DIE}) {
 	clearprompt(qw(proceed -type e -mask p -pref -pro), "ERROR\n\n@msg");
 	exit $! || $?>>8 || 255;	# suppress the msg to stderr
     } else {
@@ -571,7 +636,7 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
 
 =head1 DESCRIPTION
 
-This module provides four areas of functionality, each based on
+This module provides various areas of functionality, each based on
 clearprompt in some way but otherwise orthogonal. These are:
 
 =over 4
@@ -610,13 +675,24 @@ and is replicated throughout many scripts. ClearCase::ClearPrompt
 abstracts this dirty work without changing the interface to
 B<clearprompt>.
 
-The C<clearprompt()> function takes the exact same set of flags as
-the eponymous ClearCase command, e.g.:
+The C<clearprompt()> function takes the exact same set of flags as the
+eponymous ClearCase command except that the C<-outfile> flag is
+unnecessary since creation, reading, and removal of this temp file is
+managed internally. Thus the single function call:
 
-    my $response = clearprompt('text', '-def', '0', '-pro', 'Well? ');
+    my $response = clearprompt('text', '-def', '0', '-pro', 'So nu? ');
 
-except that the C<-outfile> flag is unnecessary since creation,
-reading, and removal of this temp file is managed internally.
+can replace the entire code sequence:
+
+    my $outfile = "/tmp/clearprompt.$$";
+    system('clearprompt', '-outfile', $outfile, 'text', '-def', '0', '-pro', 'So nu? ');
+    open(OF, $outfile);
+    my $response = <OF>;
+    close(OF);
+    unlink $outfile;
+
+With the further caveat that the code sequence would need a few more
+lines to be portable to Windows and to check for error conditions.
 
 In a void context, clearprompt() behaves asynchronously; i.e. it
 displays the dialog box and returns so that execution can continue.
@@ -669,22 +745,22 @@ There's also a facility for forwarding error messages to a specified
 list of users via email.
 
 ClearPrompt can capture messages to 4 "channels": the stdout and stderr
-I/O streams and the Perl warn() and die() functions. As the latter two
-send their output to stderr they could be subsumed by the stderr
-channel, but they have slightly different semantics and are thus
-treated separately; messages thrown by warn/die are I<anticipated>
-errors from within the current (perl) process. Other messages arriving
-on stderr will typically be I<unexpected> messages not under the
-control of the running script, for instance those from a backquoted
-cleartool command. This distinction is especially important in triggers
-where the former may represent a policy decision and the latter a plain
-old programming bug or system error. Warn/die captures are also
-displayed with the appropriate GUI icons and the title "Warning" or
-"Error".
+I/O streams and the Perl C<warn()> and C<die()> functions.  Now, since
+C<warn()> and C<die()> send their output to stderr they could be
+subsumed by the STDERR channel, but they have different semantics and
+are thus treated separately. Messages thrown by warn/die are
+I<anticipated> errors from within the current (perl) process, whereas
+other messages arriving on stderr will typically be I<unexpected>
+messages not under the control of the running script (for instance
+those from a backquoted cleartool command). This distinction is quite
+important in triggers, where the former may represent a policy decision
+and the latter a plain old programming bug or system error such as a
+locked VOB. Warn/die captures are also displayed with the appropriate
+GUI icons and the title C<Warning> or C<Error>.
 
-The 4 channels are known as WARN, DIE, STDOUT, and STDERR. To capture
-any of them to clearprompt just specify them with a leading C<+> at
-I<use> time:
+The 4 channels are known to ClearPrompt as WARN, DIE, STDOUT, and
+STDERR.  To capture any of them to clearprompt just specify them with a
+leading C<+> at I<use> time:
 
 	use ClearCase::ClearPrompt qw(+STDERR +WARN +DIE);
 
@@ -703,9 +779,67 @@ import method, e.g.
     use ClearCase::ClearPrompt '+ERRORS=vobadm';
     use ClearCase::ClearPrompt qw(+STDOUT=vobadm +STDERR=tom,dick,harry);
 
-Note: the email feature requires the Net::SMTP module to be installed
-and correctly configured. You may find the supplied
-C<./examples/smtp.pl> script useful for this purpose.
+An additional pseudo-channel can be specified for email representing
+interactions with the user via the clearprompt program itself. I.e. the
+following
+
+    use ClearCase::ClearPrompt qw(+PROMPT=vobadm);
+
+will take both prompt strings and the user's responses and mail them to
+the specified user(s).
+
+=head2 MESSAGE CAPTURE NOTES
+
+=over 4
+
+=item *
+
+The capture-to-dialog-box feature appears to be largely obsoleted by
+ClearCase v4.2 which implements similar functionality. In 4.2, messages
+to stdout/stderr are placed in the "trigger failed" dialog box. Of
+course this doesn't help if the trigger generated warnings but didn't
+fail but it solves the main problem.
+
+=item *
+
+As of ClearPrompt 1.25, the capture-to-dialog and capture-to-email
+lists are discrete. This means that C<+WARN> will capture warnings to a
+dialog box, while C<+WARN=vobadm> will send warnings via email but NOT
+to a dialog box. To get both you must request both, e.g. C<+WARN
++WARN=vobadm>. This change was made as a result of the CC fix mentioned
+above.
+
+=item *
+
+The email feature first attempts to use the Net::SMTP module.  If this
+is uninstalled or reports failure, the I<notify> utility which first
+shipped in CC 4.0 is used. Thus you must have either Net::SMTP or CC
+4.0 (or both) for email to succeed.
+
+=item *
+
+When using message capture for triggers, it may be preferable to handle
+it as a property of the trigger type rather than as part of the script.
+For instance, here's one of my triggers:
+
+    % ct lstype -l trtype:uncheckout_post@/vobs_test
+    trigger type "uncheckout_post"
+     17-Dec-01.17:09:55 by [VOB Admin] (vobadm.ccusers@u10)
+      owner: vobadm
+      group: ccusers
+      all element trigger 
+      post-operation uncheckout
+      action: -execunix /opt/perl/bin/perl -MClearCase::ClearPrompt=+CAPTURE=dsb /data/ccase/triggers/uncheckout_post.tgr
+      action: -execwin //u10/perl5/bin/perl -MClearCase::ClearPrompt=+CAPTURE=dsb //data/ccase/triggers/uncheckout_post.tgr
+
+The C<-MClearCase::ClearPrompt=+CAPTURE=dsb> on the cmdline for both
+Unix and Windows tells the trigger to email error messages to C<dsb>.
+The advantage, of course, is that the scripts aren't polluted by C<use>
+statements which aren't critical to their functionality, and the
+mailing list or capture options can be modified in one place (the
+trigger-install script) rather than in each trigger script.
+
+=back
 
 =head2 SAMPLE CAPTURE USAGE
 
@@ -782,17 +916,19 @@ not the module, and is fixed in CC 4.1.
 
 =head1 PORTING
 
-This package is known to work fine on Solaris 2.5.1/perl5.004_04,
-Solaris 7/perl5.6, and Windows NT 4.0SP3/5.005_02.  As these platforms
-are quite different they should take care of any I<significant>
-portability issues but please send reports of tweaks needed for other
-platforms to the address below.
+This package has been known to work fine on Solaris2.5.1/perl5.004_04,
+Solaris7/perl5.6, Solaris8/perl5.6.1, WindowsNT4.0SP3/perl5.005_02, and
+Win2KSP2/perl5.6.1. As these platforms are cover a wide range they
+should take care of any I<significant> portability issues but please
+send reports of tweaks needed for other platforms to the address
+below. Note also that I no longer test on the older platforms so the
+may inadvertently have done something to break them.
 
 =head1 AUTHOR
 
 David Boyce <dsb@boyski.com>
 
-Copyright (c) 1999-2001 David Boyce. All rights reserved.  This Perl
+Copyright (c) 1999-2002 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute it and/or modify it
 under the same terms as Perl itself.
 
