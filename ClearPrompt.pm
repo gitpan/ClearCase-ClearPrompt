@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.28';
+$VERSION = $VERSION = '1.29';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -18,7 +18,7 @@ require Exporter;
 @ISA = qw(Exporter);
 
 # Conceptually this is "use constant MSWIN ..." but ccperl can't do that.
-sub MSWIN { ($^O || $ENV{OS}) =~ /MSWin32|Windows_NT/i }
+sub MSWIN { ($^O || $ENV{OS}) =~ /MSWin32|Windows_NT/i ? 1 : 0 }
 
 use vars qw($TriggerSeries $StashFile);
 $TriggerSeries = $ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES};
@@ -37,21 +37,27 @@ my %MailTo = (); # accumulates lists of users to mail various msgs to.
 
 (my $prog = $0) =~ s%.*[/\\]%%;
 
-sub gui_debug {
-    # Re-exec ourself in a new window with debugging turned on. This
-    # allows "perl -d" debugging of triggers running in a GUI env.
-    delete $ENV{CLEARCASE_CLEARPROMPT_GUI_DEBUG};	# suppress recursion
+sub rerun_in_debug_mode {
+    # Re-exec ourself with debugging turned on. If in GUI mode,
+    # rerun in a new window. This allows "perl -d" debugging of
+    # triggers in a GUI env.
+    delete $ENV{CLEARCASE_CLEARPROMPT_DEBUG};	# suppress recursion
+    return if $ENV{PERL_DL_NONLAZY};		# marker for 'make test'
     my @cmd = ($^X, '-d', $0, @ARGV);
+    if ($ENV{ATRIA_FORCE_GUI}) {
+	unshift(@cmd, MSWIN() ? qw(start /wait) : qw(xterm -e));
+    }
     if (MSWIN()) {
-	exit(system(qw(start /wait), @cmd) != 0);
+	exit(system(@cmd) != 0);
     } else {
-	exec(qw(xterm -e), @cmd);
+	exec(@cmd);
     }
 }
 
 sub dbg_shell {
     # Fork an interactive shell and wait for it. Useful in triggers because
     # it lets you explore the runtime environment of the trigger script.
+    return if $ENV{PERL_DL_NONLAZY};		# marker for 'make test'
     my $cmd = $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL};
     $cmd = MSWIN() ? $ENV{COMSPEC} : '/bin/sh' unless $cmd && -x $cmd;
     if ($ENV{ATRIA_FORCE_GUI}) {
@@ -66,10 +72,10 @@ sub dbg_shell {
 
 # Debugging aids. Documented in POD section. These can also be
 # controlled via cmds at import time.
-if ($ENV{ATRIA_FORCE_GUI} && (($ENV{PERL5OPT} && $ENV{PERL5OPT} =~ /-d/) ||
-				    $ENV{CLEARCASE_CLEARPROMPT_GUI_DEBUG})) {
-    gui_debug();
-} elsif ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
+if ($ENV{CLEARCASE_CLEARPROMPT_DEBUG} ||
+	($ENV{ATRIA_FORCE_GUI} && $ENV{PERL5OPT} && $ENV{PERL5OPT} =~ /-d/)) {
+    rerun_in_debug_mode();
+} elsif ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL}) {
     dbg_shell();
 }
 
@@ -449,7 +455,7 @@ sub import {
 
     # The user may request via /DEBUG that the script (typically a trigger)
     # be rerun in debug mode. See POD.
-    gui_debug() if exists($cmds{DEBUG});
+    rerun_in_debug_mode() if exists($cmds{DEBUG});
 
     # The user may request via /SHELL that the script (typically a trigger)
     # fork an interactive shell so its runtime env can be explored.
@@ -731,7 +737,7 @@ GUI environment and pops them up as dialog boxes using clearprompt.
 
 =item * GUI trigger debugging support
 
-Can be told to restart the trigger in a perl debugger session in a
+Can be told to run the trigger in a perl debugger session in a
 separate window. Useful for debugging trigger problems that come up
 only in the GUI.
 
@@ -972,31 +978,34 @@ longer be treated specially. Appending "=E<lt>usernameE<gt>" would
 cause mail to be sent to E<lt>usernameE<gt>. See also
 C<./examples/capture.pl>.
 
-=head2 GUI TRIGGER DEBUGGING SUPPORT
+=head2 TRIGGER DEBUGGING SUPPORT
 
-If C</DEBUG> is specified:
+If C</DEBUG> is specified, e.g.:
 
     use ClearCase::ClearPrompt '/DEBUG';
 
-Then, iff the trigger script is run in a GUI environment (Unix or
-Windows), it will run in a separate text window in a perl debugger
-session. The same feature is available by setting the environment
-variable CLEARCASE_CLEARPROMPT_GUI_DEBUG to a nonzero value.
+Then the trigger script will run in a Perl debugger session.  If the
+trigger was fired from a GUI environment (Unix or Windows), the
+debugger session will run in a separate text window.  session. This
+same feature is available by setting the environment variable
 
-Alternatively, an interactive shell will be automatically invoked if
-the C<use> statement includes C</SHELL> or the
+    export CLEARCASE_CLEARPROMPT_DEBUG=1
+
+Or, an interactive shell can be automatically invoked at trigger firing
+time if the C<use> statement includes C</SHELL> or the
 B<CLEARCASE_CLEARPROMPT_DEBUG_SHELL> EV is set.  This is also valuable
 for developing and debugging trigger scripts because it lets the user
 explore the script's runtime environment (the C<CLEARCASE_*> env vars,
-the current working directory, etc.). Thus
+the current working directory, etc.). Thus either of
 
+    use ClearCase::ClearPrompt '/SHELL';
     export CLEARCASE_CLEARPROMPT_DEBUG_SHELL=1
 
 causes an interactive shell (/bin/sh or cmd.exe) to be started just
 before the script executes.  In a GUI environment the shell will be
-started in a separate window, and in any case the script waits for the
-shell to finish before continuing. It will exit immediately if the
-shell returns a nonzero exit status.
+started in a separate window. The script waits for the shell to finish
+before continuing and will exit immediately if the shell returns a
+nonzero exit status.
 
 =head2 INTEROP ENVIRONMENT NORMALIZATION
 

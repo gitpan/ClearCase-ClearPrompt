@@ -88,3 +88,9 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 1.28 Sat Jan 12 23:39:21 EST 2002
 	- Fixed recursion bug in 1.27 when using the
 	  CLEARCASE_CLEARPROMPT_GUI_DEBUG EV.
+
+1.29 Sat Jan 26 00:41:17 EST 2002
+	- COMPATIBILITY ALERT: Upon further consideration, renamed the
+	  new CLEARCASE_CLEARPROMPT_GUI_DEBUG EV to
+	  CLEARCASE_CLEARPROMPT_DEBUG. It now forces debug mode even
+	  in a cmdline environment (but still works the same for GUI).
