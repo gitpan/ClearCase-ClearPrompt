@@ -41,3 +41,6 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 
 1.21 Wed Apr  4 22:15:47 EDT 2001
 	- POD cleanup.
+
+1.22 Sun Jul  8 10:11:55 EDT 2001
+	- Returned support for :all tag for backwards compat

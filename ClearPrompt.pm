@@ -2,10 +2,17 @@ package ClearCase::ClearPrompt;
 
 require 5.004;
 
-$VERSION = '1.21';
+$VERSION = '1.22';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
+
+%EXPORT_TAGS = ( 'all' => [ qw(
+	clearprompt
+	clearprompt_dir
+	redirect
+	tempname
+) ] );
 
 require Exporter;
 @ISA = qw(Exporter);
@@ -322,11 +329,23 @@ sub import {
 
     # Then separate it into "normal-looking" symbols to export into
     # caller's namespace and "commands" to deal with right here.
-    my %exports = map { $_ => 1 } grep !/^\+/, @p;
+    # Also, provide our own implementation of export tags for qw(:all).
+    # I'd prefer not to support that any more but must for back compat.
+    my %exports = map { $_ => 1 } grep !/^[+:]/, @p;
+    my @tags = map {substr($_, 1)} grep /^:/, @p;
     my %cmds = map {m%^.(\w+)=?(.*)%; $1 => $2 } grep /^\+/, @p;
 
+    # If :tags were requested, map them to their predefined export lists.
+    for my $tag (@tags) {
+	no strict 'vars';
+	next unless $EXPORT_TAGS{$tag};
+	for (@{$EXPORT_TAGS{$tag}}) {
+	    $exports{$_} = 1;
+	}
+    }
+
     # Export the die func if its corresponding channel was requested.
-    $exports{'die'}  = 1 if exists $cmds{DIE};
+    $exports{'die'} = 1 if exists $cmds{DIE};
 
     # Export the non-cmd symbols, which may include die().
     __PACKAGE__->export_to_level(1, $p[0], grep {!/:/} keys %exports);
@@ -342,8 +361,8 @@ sub import {
     $ClearCase::ClearPrompt::TriggerSeries = 1 if exists $cmds{TRIGGERSERIES}
 			&& !exists $ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES};
 
-    # +CAPTURE grabs all forms of output while +ERRORS grabs all error
-    # forms (meaning not stdout). NOTE: we must be very careful
+    # +CAPTURE grabs all forms of output while +ERRORS grabs only error
+    # forms (meaning everything but stdout). NOTE: we must be very careful
     # about the fact that %cmds may have keys which EXIST but whose
     # values are UNDEFINED.
     if (exists($cmds{CAPTURE})) {
@@ -642,7 +661,7 @@ I<use> time:
 
 	use ClearCase::ClearPrompt qw(+STDERR +WARN +DIE);
 
-These 3 "error channels" can be requested via the meta-command
+These 3 "error channels" can also be requested via the meta-command
 
 	use ClearCase::ClearPrompt qw(+ERRORS);
 
@@ -650,9 +669,9 @@ while all 4 can be captured with
 
 	use ClearCase::ClearPrompt qw(+CAPTURE);
 
-Messages can be automatically mailed to a list of users by attaching
-the list to the name of the channel using '=' in the import method,
-e.g.
+Messages may be automatically mailed to a list of users by attaching
+the comma-separated list to the name of the channel using '=' in the
+import method, e.g.
 
     use ClearCase::ClearPrompt '+ERRORS=vobadm';
     use ClearCase::ClearPrompt qw(+STDOUT=vobadm +STDERR=tom,dick,harry);
