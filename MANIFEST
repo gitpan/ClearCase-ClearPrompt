@@ -3,4 +3,5 @@ MANIFEST
 Makefile.PL
 ClearPrompt.pm
 README
+SUMMARY
 test.pl

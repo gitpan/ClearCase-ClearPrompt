@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.004;
 
-$VERSION = '1.15';
+$VERSION = '1.16';
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(clearprompt clearprompt_dir);
 %EXPORT_TAGS = ( 'all' => [@EXPORT_OK] );
@@ -54,8 +54,7 @@ sub tempname
 # Run clearprompt with specified args and return what it returned. Uses the
 # exact same syntax as the clearprompt executable ('ct man clearprompt')
 # except for -outfile <file> which is handled internally here.
-sub clearprompt(@)
-{
+sub clearprompt {
    my $mode = shift;
    my @args = @_;
 
@@ -96,7 +95,7 @@ sub clearprompt(@)
 	    close(OUTFILE);
 	 }
       } else {
-	 # If we took a signal, return undef with the signo in $?. The
+	 # If we took a signal, return undef with the signal # in $?. The
 	 # clearprompt cmd apparently catches SIGINT and returns 0x400 for
 	 # some reason; we fix it here so $? looks like a normal sig2.
 	 $? = 2 if $? == 0x400;
@@ -183,7 +182,7 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
     my $rc = clearprompt(qw(yes_no -mask y,n -type ok -prompt), 'Well?');
 
     # returns text into specified variable (context sensitive).
-    my $txt = clearprompt(qw(text -pref -prompt), 'Enter text data here: ');
+    my $txt = clearprompt(qw(text -pref -pro), 'Enter text data here: ');
 
     # asynchronous usage - show dialog box and continue
     clearprompt(qw(proceed -mask p -type ok -prompt), "You said: $txt");
