@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.26';
+$VERSION = $VERSION = '1.27';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -37,12 +37,22 @@ my %MailTo = (); # accumulates lists of users to mail various msgs to.
 
 (my $prog = $0) =~ s%.*[/\\]%%;
 
-# Fork a shell if requested via this EV. Very useful in triggers because
-# it lets you explore the runtime environment of the trigger script.
-if ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
-    my $cmd = MSWIN() ? $ENV{COMSPEC} : '/bin/sh';
-    $cmd = $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL}
-				if -x $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL};
+sub gui_debug {
+    # Re-exec ourself in a new window with debugging turned on. This
+    # allows "perl -d" debugging of triggers running in a GUI env.
+    my @cmd = ($^X, '-d', $0, @ARGV);
+    if (MSWIN()) {
+	exit(system(qw(start /wait), @cmd) != 0);
+    } else {
+	exec(qw(xterm -e), @cmd);
+    }
+}
+
+sub dbg_shell {
+    # Fork an interactive shell and wait for it. Useful in triggers because
+    # it lets you explore the runtime environment of the trigger script.
+    my $cmd = $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL};
+    $cmd = MSWIN() ? $ENV{COMSPEC} : '/bin/sh' unless $cmd && -x $cmd;
     if ($ENV{ATRIA_FORCE_GUI}) {
 	if (MSWIN()) {
 	    $cmd = "start /wait $cmd";
@@ -51,6 +61,15 @@ if ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
 	}
     }
     exit 1 if system $cmd;
+}
+
+# Debugging aids. Documented in POD section. These can also be
+# controlled via cmds at import time.
+if ($ENV{ATRIA_FORCE_GUI} && (($ENV{PERL5OPT} && $ENV{PERL5OPT} =~ /-d/) ||
+				    $ENV{CLEARCASE_CLEARPROMPT_GUI_DEBUG})) {
+    gui_debug();
+} elsif ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
+    dbg_shell();
 }
 
 # Make an attempt to supply a full path to the specified program.
@@ -202,13 +221,18 @@ sub clearprompt {
     if ($StashFile) {
 	if ($ENV{CLEARCASE_BEGIN_SERIES} && !$ENV{CLEARCASE_END_SERIES}) {
 	    my $top = ! -f $StashFile;
-	    require Data::Dumper;
-	    open(STASH, ">>$StashFile") || die "$prog: $StashFile: $!";
-	    print STASH "# This file contains data stashed for $prog\n" if $top;
-	    print STASH Data::Dumper->new([$data], ["stash$lineno"])->Dump;
-	    close(STASH);
-	    if (! $ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
-		$SIG{INT} = sub { unlink $StashFile };
+	    eval { require Data::Dumper };
+	    if ($@ || $] < 5.004) {
+		warn "$prog: Warning: TriggerSeries requires Data::Dumper\n";
+	    } else {
+		open(STASH, ">>$StashFile") || die "$prog: $StashFile: $!";
+		print STASH "# This file contains data stashed for $prog\n"
+									if $top;
+		print STASH Data::Dumper->new([$data], ["stash$lineno"])->Dump;
+		close(STASH);
+		if (! $ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
+		    $SIG{INT} = sub { unlink $StashFile };
+		}
 	    }
 	}
     }
@@ -332,7 +356,8 @@ sub sendmsg {
     eval { require Net::SMTP };
     if (! $@) {
 	my $name = $ENV{CLEARCASE_USER} || $ENV{USERNAME} || $ENV{LOGNAME};
-	my $smtp = Net::SMTP->new;
+	my $smtp;
+	eval { $smtp = Net::SMTP->new };
 	if ($smtp) {
 	    local $^W = 0; # hide a spurious warning from deep in Net::SMTP
 	    $smtp->mail($name) &&
@@ -370,7 +395,7 @@ sub _automail {
     # We don't need Sys::Hostname except in this situation, so ...
     eval { require Sys::Hostname; };
     $subj .= ' on ' . Sys::Hostname::hostname() unless $@;
-    $subj .= ' via ' . __PACKAGE__;
+    $subj .= ' via ClearCase::ClearPrompt';
     sendmsg($addrs, $subj, @_);
 }
 
@@ -386,6 +411,7 @@ sub _automail {
 ## Apologies to anyone trying to read this ... it's a real mess, due
 ## mostly to my attempts to stay compatible with earler versions which
 ## may not have involved the best design decisions.
+my($tmpout, $tmperr);	# these must be here for scoping reasons
 sub import {
     # First remember the entire parameter list.
     my @p = @_;
@@ -420,6 +446,14 @@ sub import {
 	}
     }
 
+    # The user may request via /DEBUG that the script (typically a trigger)
+    # be rerun in debug mode. See POD.
+    gui_debug() if exists($cmds{DEBUG});
+
+    # The user may request via /SHELL that the script (typically a trigger)
+    # fork an interactive shell so its runtime env can be explored.
+    dbg_shell() if exists($cmds{SHELL});
+
     # Allow this EV to override the capture list.
     if ($ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST}) {
 	@p = split /\s+/, $ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST};
@@ -430,6 +464,8 @@ sub import {
 	}
     }
 
+    # Now divide capture requests into those for dialog boxes and
+    # those for mailings.
     %Dialogs  = map {substr($_, 1) => 1} grep /^\+\w+$/, @p;
     %Mailings = map {m%^.(\w+)=(.*)%; $1 => $2 } grep /^\+\w+=/, @p;
 
@@ -506,8 +542,8 @@ sub import {
 
     # Last, handle generic stdout and stderr unless the caller asks us not to.
     if (exists($caps{STDOUT}) || exists($caps{STDERR})) {
-	my $tmpout = tempname('stdout');
-	my $tmperr = tempname('stderr');
+	$tmpout = tempname('stdout');
+	$tmperr = tempname('stderr');
 
 	# Connect stdout and stderr to temp files for later use in END {}.
 	if (exists($caps{STDOUT}) && ($ENV{ATRIA_FORCE_GUI} || $caps{STDOUT})) {
@@ -521,7 +557,7 @@ sub import {
 
 	# After program finishes, collect any stdout/stderr and display
 	# with clearprompt and/or mail it out.
-	END {
+	sub endfunc {
 	    # retain original exit code on stack
 	    my $rc = $?;
 	    local $?;
@@ -584,7 +620,8 @@ sub import {
 		    }
 		}
 	    }
-	}
+	};
+	eval "END { endfunc(); }";
     }
 }
 
@@ -654,6 +691,9 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
  # Clean up environment on Windows to use /-style paths:
  use ClearCase::ClearPrompt qw(/ENV);
 
+ # Cause the program to run in the debugger, even in a GUI environment:
+ use ClearCase::ClearPrompt qw(/DEBUG);
+
  # Automatically divert trigger error msgs to clearprompt dialogs
  use ClearCase::ClearPrompt qw(+ERRORS);
 
@@ -685,8 +725,14 @@ Records and replays responses across multiple trigger firings.
 
 =item * Message Capture
 
-Catches messages to stdout or stderr which would otherwise be lost in a
+Catches output to stdout or stderr which would otherwise be lost in a
 GUI environment and pops them up as dialog boxes using clearprompt.
+
+=item * GUI trigger debugging support
+
+Can be told to restart the trigger in a perl debugger session in a
+separate window. Useful for debugging trigger problems that come up
+only in the GUI.
 
 =item * InterOp Environment Normalization
 
@@ -707,7 +753,7 @@ needs some detail. Most modules are intended to be used like this
 
 	use Some::Module qw(X Y Z);
 
-where X, Y, and Z are symbols (variables, functions, etc) that you want
+where X, Y, and Z are symbols (variables, functions, etc) you want
 exported (or imported, depending where you stand) from the module into
 the current namespace. ClearPrompt extends this: X, Y, and Z may be
 imports as above, or they may be I<commands>, or they may represent
@@ -849,7 +895,7 @@ following
 
     use ClearCase::ClearPrompt qw(+PROMPT=vobadm);
 
-will take both prompt strings and the user's responses and mail them to
+will take all prompt strings and the user's responses and mail them to
 the specified user(s).
 
 =head2 MESSAGE CAPTURE NOTES
@@ -922,7 +968,34 @@ stderr.  Changing it to C<+WARN> would put the I<warning> in a dialog
 box but let the I<error msg> come to text stderr, while C<+STDERR>
 would put both messages in the same dialog since C<warn()> would no
 longer be treated specially. Appending "=E<lt>usernameE<gt>" would
-cause mail to be sent to E<lt>usernameE<gt>.
+cause mail to be sent to E<lt>usernameE<gt>. See also
+C<./examples/capture.pl>.
+
+=head2 GUI TRIGGER DEBUGGING SUPPORT
+
+If C</DEBUG> is specified:
+
+    use ClearCase::ClearPrompt '/DEBUG';
+
+Then, iff the trigger script is run in a GUI environment (Unix or
+Windows), it will run in a separate text window in a perl debugger
+session. The same feature is available by setting the environment
+variable CLEARCASE_CLEARPROMPT_GUI_DEBUG to a nonzero value.
+
+Alternatively, an interactive shell will be automatically invoked if
+the C<use> statement includes C</SHELL> or the
+B<CLEARCASE_CLEARPROMPT_DEBUG_SHELL> EV is set.  This is also valuable
+for developing and debugging trigger scripts because it lets the user
+explore the script's runtime environment (the C<CLEARCASE_*> env vars,
+the current working directory, etc.). Thus
+
+    export CLEARCASE_CLEARPROMPT_DEBUG_SHELL=1
+
+causes an interactive shell (/bin/sh or cmd.exe) to be started just
+before the script executes.  In a GUI environment the shell will be
+started in a separate window, and in any case the script waits for the
+shell to finish before continuing. It will exit immediately if the
+shell returns a nonzero exit status.
 
 =head2 INTEROP ENVIRONMENT NORMALIZATION
 
@@ -957,23 +1030,10 @@ is also a C<./examples> subdir with some sample scripts.
 
 =head1 ENVIRONMENT VARIABLES
 
-An interactive shell will be automatically invoked if the
-B<CLEARCASE_CLEARPROMPT_DEBUG_SHELL> EV is set. If its value is the
-name of an executable program that program will be run; otherwise the
-system shell (C</bin/sh> or C<cmd.exe>) is used. This is quite valuable
-for developing and debugging trigger scripts because it lets the
-developer explore the runtime environment of the script (the
-C<CLEARCASE_*> env vars, the current working directory, etc.). E.g.
-
-	export CLEARCASE_CLEARPROMPT_DEBUG_SHELL=/bin/ksh
-
-will cause an interactive Korn shell to be started before the script
-executes. The script continues iff the shell returns a zero exit
-status.
-
-There are a few other EV's used to control or override this module's
-behaviors but they are documented only in the code. They all match the
-pattern C<CLEARCASE_CLEARPROMPT_*>.
+There are a few other EV's which can affect this module's behavior.
+Those not mentioned above are advanced debugging features and are
+documented only in the code. They are all in the
+C<CLEARCASE_CLEARPROMPT_*> namespace.
 
 =head1 NOTES
 

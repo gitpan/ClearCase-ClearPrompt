@@ -1,10 +1,10 @@
 # Before `make install' is performed this script should be runnable with
 # `make test'. After `make install' it should work as `perl test.pl'
 
-use constant MSWIN	=> $^O =~ /MSWin32|Windows_NT/i;
+sub MSWIN { ($^O || $ENV{OS}) =~ /MSWin32|Windows_NT/i }
 
 # Deal with the possibility of no display on Unix.
-BEGIN { $ENV{ATRIA_FORCE_GUI} = MSWIN ? 1 : $ENV{DISPLAY} }
+BEGIN { $ENV{ATRIA_FORCE_GUI} = MSWIN() ? 1 : $ENV{DISPLAY} }
 
 ######################### We start with some black magic to print on failure.
 
@@ -33,7 +33,7 @@ print "ok 1\n";
 ######################### End of black magic.
 
 # Must have ClearCase to test.
-my $cchome = $ENV{ATRIAHOME} || (MSWIN ? 'C:/atria' : '/usr/atria');
+my $cchome = $ENV{ATRIAHOME} || (MSWIN() ? 'C:/atria' : '/usr/atria');
 if (! -d $cchome) {
    my $wv = qx(cleartool pwv);
    if ($? || ! $wv) {
@@ -84,7 +84,8 @@ ClearCase::ClearPrompt->import("+PROMPT=$name");
 
     my($ptext, $prc);
     my $pmsg = "you entered";
-    for my $seq (1..3) {
+    my $seq;
+    for $seq (1..3) {
 	$ENV{CLEARCASE_BEGIN_SERIES} = $seq == 1;
 	$ENV{CLEARCASE_END_SERIES} =   $seq == 3;
 
@@ -93,18 +94,18 @@ ClearCase::ClearPrompt->import("+PROMPT=$name");
 
 	Please type some characters at the prompt:);
 	my $data = clearprompt(@testx, $msgx);
-	$data =~ s/"/'/g if MSWIN;
+	$data =~ s/"/'/g if MSWIN();
 	print qq(At text prompt #$seq $pmsg '$data'.\n);
 	print ok(defined($data) && (!defined($ptext) || $ptext eq $data));
 	$ptext = $data;
 
-	my @rcnames = ('Yes', 'No', MSWIN ? 'Cancel' : 'Abort');
+	my @rcnames = ('Yes', 'No', MSWIN() ? 'Cancel' : 'Abort');
 	my $rcx = clearprompt(qw(yes_no -type ok -pro), "Choose any response");
 	my $rcname = $rcnames[$rcx];
 	print qq(At proceed prompt #$seq $pmsg '$rcname'.\n);
 	my $yay = defined($rcname) && (!defined($prc) || $prc eq $rcname);
 	print ok($yay);
-	$pmsg = "*REPLAYING*" if $yay;
+	$pmsg = "*REPLAYING*" if $yay && ($] >= 5.004);
 	$prc = $rcname;
     }
 }

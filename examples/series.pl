@@ -1,4 +1,4 @@
-use ClearCase::ClearPrompt qw(clearprompt +TRIGGERSERIES);
+use ClearCase::ClearPrompt qw(clearprompt /TRIGGERSERIES);
 
 $ENV{CLEARCASE_SERIES_ID} = 'a1:b2:c3:d4';
 

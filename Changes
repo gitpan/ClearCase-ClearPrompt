@@ -79,3 +79,8 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 	  works).
 	- Fix to make CLEARCASE_CLEARPROMPT_DEBUG_SHELL work in
 	  GUI environments.
+
+1.27 Tue Jan  8 00:40:55 EST 2002
+	- Added new features (/DEBUG, /SHELL). See POD for details.
+	- Make trigger series fail more gracefully with ccperl
+	  (it can't actually work since ccperl doesn't have Data::Dumper).
