@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = '1.23';
+$VERSION = $VERSION = '1.24';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -34,6 +34,15 @@ if ($] > 5.004) {
 my %MailTo = (); # accumulates lists of users to mail various msgs to.
 
 (my $prog = $0) =~ s%.*[/\\]%%;
+
+# Fork a shell if requested via this EV. Very useful in triggers because
+# it lets you explore the runtime environment of the trigger script.
+if ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
+    my $cmd = MSWIN() ? $ENV{COMSPEC} : '/bin/sh';
+    $cmd = $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL}
+				if -x $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL};
+    exit 1 if system $cmd;
+}
 
 # Make an attempt to supply a full path to the specified program.
 # Else fall back to relying on PATH.
@@ -710,12 +719,12 @@ child process:
    system q(perl nosuchscript);
 
 You should see a couple of error msgs in dialog boxes, and none on
-stderr.  Removing the '+CAPTURE' would leave the messages on text-mode
-stderr.  Changing it to '+WARN' would put the warning in a dialog box
-but let the error msg come to text stderr, while changing it to
-'+STDERR' would put both messages in the same dialog since C<warn()>
-would no longer be treated specially. Appending "=E<lt>usernameE<gt>"
-would cause mail to be sent to E<lt>usernameE<gt>.
+stderr.  Removing the C<+CAPTURE> would leave the messages on text-mode
+stderr.  Changing it to C<+WARN> would put the I<warning> in a dialog
+box but let the I<error msg> come to text stderr, while C<+STDERR>
+would put both messages in the same dialog since C<warn()> would no
+longer be treated specially. Appending "=E<lt>usernameE<gt>" would
+cause mail to be sent to E<lt>usernameE<gt>.
 
 =head2 DIRECTORY PROMPTING
 
@@ -737,6 +746,26 @@ this feature unless you had to, typically.
 
 Examples of advanced usage can be found in the test.pl script. There
 is also a <./examples> subdir with a few sample scripts.
+
+=head1 ENVIRONMENT VARIABLES
+
+An interactive shell will be automatically invoked if the
+B<CLEARCASE_CLEARPROMPT_DEBUG_SHELL> EV is set. If its value is the
+name of an executable program that program will be run; otherwise the
+system shell (C</bin/sh> or C<cmd.exe>) is used. This is quite valuable
+for developing and debugging trigger scripts because it lets the
+developer explore the runtime environment of the script (the
+C<CLEARCASE_*> env vars, the current working directory, etc.). E.g.
+
+	export CLEARCASE_CLEARPROMPT_DEBUG_SHELL=/bin/ksh
+
+will cause an interactive Korn shell to be started before the script
+executes. The script continues iff the shell returns a zero exit
+status.
+
+There are a few other EV's used to control or override this module's
+behaviors but they are documented only in the code. They all match the
+pattern C<CLEARCASE_CLEARPROMPT_*>.
 
 =head1 NOTES
 
