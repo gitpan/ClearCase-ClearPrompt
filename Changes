@@ -72,3 +72,10 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 	- Added use of the 'notify' program to send email as a
 	  fallback in case Net::SMTP fails.
 	- Added '+PROMPT' feature.
+
+1.26 Fri Jan  4 11:06:27 EST 2002
+	- Added a new feature (/ENV). See POD for details.
+	- Renamed +TRIGGERSERIES to /TRIGGERSERIES (old style still
+	  works).
+	- Fix to make CLEARCASE_CLEARPROMPT_DEBUG_SHELL work in
+	  GUI environments.

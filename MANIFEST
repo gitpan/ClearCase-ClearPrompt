@@ -6,6 +6,7 @@ README
 SUMMARY.T0045
 test.pl
 examples/capture.pl
+examples/env.pl
 examples/series.pl
 examples/simplest.pl
 examples/smtp.pl

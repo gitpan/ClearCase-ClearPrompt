@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.25';
+$VERSION = $VERSION = '1.26';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -43,6 +43,13 @@ if ($ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL} && !$ENV{PERL_DL_NONLAZY}) {
     my $cmd = MSWIN() ? $ENV{COMSPEC} : '/bin/sh';
     $cmd = $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL}
 				if -x $ENV{CLEARCASE_CLEARPROMPT_DEBUG_SHELL};
+    if ($ENV{ATRIA_FORCE_GUI}) {
+	if (MSWIN()) {
+	    $cmd = "start /wait $cmd";
+	} else {
+	    $cmd = "xterm -e $cmd";
+	}
+    }
     exit 1 if system $cmd;
 }
 
@@ -369,40 +376,57 @@ sub _automail {
 
 # Warning: significant hackery here. Basically, normal-looking symbol
 # names are passed on to the Exporter import method as usual, whereas
-# names of the form +WORD or +WORD=<list> are commands which produce
-# special behavior within this import sub. All commands start with
-# '+' and include +{CAPTURE,ERRORS,WARN,DIE,STDOUT,STDERR}. If the cmd
+# names of the form /WORD or +WORD or +WORD=<list> are commands which
+# cause special behavior within this routine. All commands start with
+# '/', such as /TRIGGERSERIES and /ENV. Captures start with '+' and
+# include +{CAPTURE,ERRORS,WARN,DIE,STDOUT,STDERR}. If the capture
 # name has a list of users attached, eg "+STDERR=user1,user2,..",
-# this leaves the channel attached and also mails messages to the
-# specified users. Use +CAPTURE=<list> to email messages from all channels
-# to <list>.
+# the captured messages are sent via email to the specified users.
+# Use +CAPTURE=<list> to email messages from all channels to <list>.
+## Apologies to anyone trying to read this ... it's a real mess, due
+## mostly to my attempts to stay compatible with earler versions which
+## may not have involved the best design decisions.
 sub import {
     # First remember the entire parameter list.
     my @p = @_;
 
     # Then separate it into "normal-looking" symbols to export into
-    # caller's namespace and "commands" to deal with right here.
+    # caller's namespace, "captures" which describe channels we need
+    # to arrange to capture here, and "commands" to deal with otherwise.
     # Also, provide our own implementation of export tags for qw(:all).
     # I'd prefer not to support that any more but do for back compat.
-    my %exports = map { $_ => 1 } grep !/^[+:]/, @p;
-    my %tags = map {substr($_, 1) => 1} grep /^:/, @p;
-    my %cmds = map {m%^.(\w+)=?(.*)%; $1 => $2} grep /^\+/, @p;
+    my %exports = map { $_ => 1 } grep !m%^[+/:]%, @p;
+    my %tags = map {substr($_, 1) => 1} grep m%^:%, @p;
+    my %caps = map {m%^.(\w+)=?(.*)%; $1 => $2} grep m%^\+%, @p;
+    my %cmds = map {m%^.(\w+)%; $1 => 1} grep m%^/%, @p;
 
     # Allow trigger series stashing to be turned on at import time,
-    # but let the EV override.
-    if (exists($cmds{TRIGGERSERIES})) {
+    # but let the EV override. We allow '+TRIGGERSERIES' for
+    # compatibility but '/TRIGGERSERIES' is preferred.
+    if (exists($cmds{TRIGGERSERIES}) || exists($caps{TRIGGERSERIES})) {
+	$cmds{TRIGGERSERIES} ||= $caps{TRIGGERSERIES};
+	delete $caps{TRIGGERSERIES};
 	$ClearCase::ClearPrompt::TriggerSeries = 1
 			if !exists($ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES});
-	delete $cmds{TRIGGERSERIES};
+    }
+
+    # If requested to via '/ENV', modify all CLEARCASE_* EV's which
+    # use back (\) slashes such that they use forward (/) slashes
+    # instead, assuming that these will refer to pathnames or parts
+    # of pathnames, perhaps in MVFS space (e.g. CLEARCASE_VERSION_ID).
+    if (MSWIN() && exists($cmds{ENV})) {
+	for (keys %ENV) {
+	    $ENV{$_} =~ s%\\%/%g if m%^CLEARCASE_%;
+	}
     }
 
     # Allow this EV to override the capture list.
     if ($ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST}) {
 	@p = split /\s+/, $ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST};
-	%cmds = map {m%^.(\w+)=?(.*)%; $1 => $2} grep /^\+/, @p;
+	%caps = map {m%^.(\w+)=?(.*)%; $1 => $2} grep /^\+/, @p;
 	for (split /\s+/, @p) {
 	    m%^.(\w+)=?(.*)%;
-	    $cmds{$1} = $2;
+	    $caps{$1} = $2;
 	}
     }
 
@@ -419,12 +443,12 @@ sub import {
     }
 
     # Export the die func if its corresponding channel was requested.
-    $exports{'die'} = 1 if exists($cmds{DIE}) ||
-				exists($cmds{CAPTURE}) || exists($cmds{ERRORS});
+    $exports{'die'} = 1 if exists($caps{DIE}) ||
+				exists($caps{CAPTURE}) || exists($caps{ERRORS});
 
     # Set up the override hook for warn() if requested.
-    $SIG{__WARN__} = \&cpwarn if exists($cmds{WARN}) ||
-				exists($cmds{CAPTURE}) || exists($cmds{ERRORS});
+    $SIG{__WARN__} = \&cpwarn if exists($caps{WARN}) ||
+				exists($caps{CAPTURE}) || exists($caps{ERRORS});
 
     # Export the non-cmd symbols, which may include die().
     my @shares = grep {!/:/} keys %exports;
@@ -481,16 +505,16 @@ sub import {
     $MailTo{PROMPT}	= [split /,/, $Mailings{PROMPT}] if $Mailings{PROMPT};
 
     # Last, handle generic stdout and stderr unless the caller asks us not to.
-    if (exists($cmds{STDOUT}) || exists($cmds{STDERR})) {
+    if (exists($caps{STDOUT}) || exists($caps{STDERR})) {
 	my $tmpout = tempname('stdout');
 	my $tmperr = tempname('stderr');
 
 	# Connect stdout and stderr to temp files for later use in END {}.
-	if (exists($cmds{STDOUT}) && ($ENV{ATRIA_FORCE_GUI} || $cmds{STDOUT})) {
+	if (exists($caps{STDOUT}) && ($ENV{ATRIA_FORCE_GUI} || $caps{STDOUT})) {
 	    open(HOLDOUT, '>&STDOUT');
 	    open(STDOUT, ">$tmpout") || warn "$tmpout: $!";
 	}
-	if (exists($cmds{STDERR}) && ($ENV{ATRIA_FORCE_GUI} || $cmds{STDERR})) {
+	if (exists($caps{STDERR}) && ($ENV{ATRIA_FORCE_GUI} || $caps{STDERR})) {
 	    open(HOLDERR, '>&STDERR');
 	    open(STDERR, ">$tmperr") || warn "$tmperr: $!";
 	}
@@ -624,11 +648,20 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
  clearprompt(qw(proceed -mask p -type ok -prompt), "You said: $txt");
 
  # Trigger series (record/replay responses for multiple elements)
- use ClearCase::ClearPrompt qw(clearprompt +TRIGGERSERIES);
+ use ClearCase::ClearPrompt qw(clearprompt /TRIGGERSERIES);
  my $txt = clearprompt(qw(text -pref -pro), 'Response for all elems: ');
+
+ # Clean up environment on Windows to use /-style paths:
+ use ClearCase::ClearPrompt qw(/ENV);
 
  # Automatically divert trigger error msgs to clearprompt dialogs
  use ClearCase::ClearPrompt qw(+ERRORS);
+
+ # As above but send error msgs via email instead to user1 and user2
+ use ClearCase::ClearPrompt qw(+ERRORS=user1,user2);
+
+ # As above but send msgs to the current user
+ use ClearCase::ClearPrompt '+ERRORS=' . ($ENV{LOGNAME} || $ENV{USERNAME});
 
  # Prompt for a directory (not supported natively by clearprompt cmd)
  use ClearCase::ClearPrompt qw(clearprompt_dir);
@@ -655,19 +688,50 @@ Records and replays responses across multiple trigger firings.
 Catches messages to stdout or stderr which would otherwise be lost in a
 GUI environment and pops them up as dialog boxes using clearprompt.
 
+=item * InterOp Environment Normalization
+
+Modifies %ENV on Windows such that all C<CLEARCASE_*> values use
+forward (/) slashes instead of backslashes. Generally useful in
+triggers where many path values such as $ENV{CLEARCASE_PN} are provided
+in the environment.
+
 =item * Directory Chooser
 
-Allows clearprompt to be used to select directories (aka folders).
+Allows clearprompt to be used for selecting directories (aka folders).
 
 =back
 
-All of which are discussed in more detail below.
+Many of these are of particular value within trigger scripts. All are
+discussed in more detail below, but first the import/export scenario
+needs some detail. Most modules are intended to be used like this
+
+	use Some::Module qw(X Y Z);
+
+where X, Y, and Z are symbols (variables, functions, etc) that you want
+exported (or imported, depending where you stand) from the module into
+the current namespace. ClearPrompt extends this: X, Y, and Z may be
+imports as above, or they may be I<commands>, or they may represent
+I<captures>.  Command names start with C</>, capture names start with
+C<+>, and all others are assumed to be traditional symbols for
+import/export. All may be intermingled. Thus,
+
+	# These are all the currently-recognized commands
+	use ClearCase::ClearPrompt qw(/ENV /TRIGGERSERIES);
+
+	# This shows a sample of the captures available.
+	use ClearCase::ClearPrompt qw(+DIE +ERRORS=vobadm);
+
+	# This shows how to import a couple of useful symbols
+	use ClearCase::ClearPrompt qw($CT clearprompt);
+
+	# And this specifies some of each
+	use ClearCase::ClearPrompt qw($CT /ENV +ERRORS=vobadm);
 
 =head2 CLEARPROMPT ABSTRACTION
 
 Native ClearCase provides a utility (B<clearprompt>) for collecting
-user input or displaying messages within triggers. However, use of
-this tool is awkward and error prone, especially in multi-platform
+user input or displaying messages within triggers. However, use of this
+tool is awkward and error prone, especially in multi-platform
 environments.  Often you must create temp files, invoke clearprompt to
 write into them, open them and read the data, then unlink them. In many
 cases this code must run seamlessly on both Unix and Windows systems
@@ -709,7 +773,7 @@ returns the undefined value.
 
 Since clearprompt is often used in triggers, special support is
 provided in ClearCase::ClearPrompt for multiple trigger firings
-deriving from a single CC operation upon multiple obects.
+deriving from a single CC operation upon multiple objects.
 
 If the boolean $ClearCase::ClearPrompt::TriggerSeries has a true value,
 clearprompt will 'stash' its responses through multiple trigger
@@ -719,9 +783,9 @@ TriggerSeries flag would cause all response(s) to clearprompts for the
 first file to be recorded and replayed for the 2nd through nth trigger
 firings. The user gets prompted only once.
 
-Trigger series behavior can also be requested at import time via:
+Trigger series behavior can be requested at import time via:
 
-    use ClearCase::ClearPrompt qw(+TRIGGERSERIES);
+    use ClearCase::ClearPrompt qw(/TRIGGERSERIES);
 
 This feature is only available on CC versions which support the
 CLEARCASE_SERIES_ID environment variable (3.2.1 and up) but attempts to
@@ -836,7 +900,7 @@ The C<-MClearCase::ClearPrompt=+CAPTURE=dsb> on the cmdline for both
 Unix and Windows tells the trigger to email error messages to C<dsb>.
 The advantage, of course, is that the scripts aren't polluted by C<use>
 statements which aren't critical to their functionality, and the
-mailing list or capture options can be modified in one place (the
+mailing list or capture options can be maintained in one place (the
 trigger-install script) rather than in each trigger script.
 
 =back
@@ -860,6 +924,16 @@ would put both messages in the same dialog since C<warn()> would no
 longer be treated specially. Appending "=E<lt>usernameE<gt>" would
 cause mail to be sent to E<lt>usernameE<gt>.
 
+=head2 INTEROP ENVIRONMENT NORMALIZATION
+
+If C</ENV> is specified:
+
+    use ClearCase::ClearPrompt '/ENV';
+
+Any environment variables whose names match C<CLEARCASE_*> and whose
+value contains back C<\> slashes will be modified to use forward
+(C</>) slashes instead.  This is a no-op except on Windows.
+
 =head2 DIRECTORY PROMPTING
 
 The clearprompt command has no builtin directory chooser, so this
@@ -879,7 +953,7 @@ this feature unless you had to, typically.
 =head1 MORE EXAMPLES
 
 Examples of advanced usage can be found in the test.pl script. There
-is also a <./examples> subdir with a few sample scripts.
+is also a C<./examples> subdir with some sample scripts.
 
 =head1 ENVIRONMENT VARIABLES
 
@@ -923,6 +997,14 @@ should take care of any I<significant> portability issues but please
 send reports of tweaks needed for other platforms to the address
 below. Note also that I no longer test on the older platforms so the
 may inadvertently have done something to break them.
+
+It will work in a degraded form with I<ccperl> (the 5.001 version
+supplied with ClearCase through at least CC5.0). Most features seem to
+work with ccperl (in limited testing); the trigger series code is an
+exception because it uses Data::Dumper which in turn requires
+Perl5.004. However, though I've made some effort to port this
+to ccperl, I still strongly recommend you use a modern Win32 Perl
+configured for network use, as described at http://www.cleartool.com/.
 
 =head1 AUTHOR
 
