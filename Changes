@@ -44,3 +44,13 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 
 1.22 Sun Jul  8 10:11:55 EDT 2001
 	- Returned support for :all tag for backwards compat
+
+1.23 Sun Sep 30 07:42:14 EDT 2001
+	- Partially backported to ccperl (5.001). I believe
+	 my code is now 5.001-compatible per se, and the
+	 clearprompt() stuff works fine. However, some
+	 features (such as TriggerSeries which uses Data::Dumper)
+	 may depend on other modules which are not present or
+	 up to snuff in ccperl. In fact Data::Dumper itself
+	 requires at least 5.004, so attempts to use TriggerSeries
+	 will certainly fail with ccperl.

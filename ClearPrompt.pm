@@ -1,8 +1,8 @@
 package ClearCase::ClearPrompt;
 
-require 5.004;
+require 5.001;
 
-$VERSION = '1.22';
+$VERSION = '1.23';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -17,16 +17,19 @@ $VERSION = '1.22';
 require Exporter;
 @ISA = qw(Exporter);
 
-use constant MSWIN	=> $^O =~ /MSWin32|Windows_NT/i;
+# Conceptually this is "use constant MSWIN ..." but ccperl can't do that.
+sub MSWIN { ($^O || $ENV{OS}) =~ /MSWin32|Windows_NT/i }
 
-use subs 'die';	# We override this and may also export it to caller.
 use vars qw($TriggerSeries $StashFile);
 $TriggerSeries = $ENV{CLEARCASE_CLEARPROMPT_TRIGGERSERIES};
 
 # Make $CT read-only but not a constant so it can be interpolated.
 *CT = \ccpath('cleartool');
 
-use strict;
+if ($] > 5.004) {
+    use strict;
+    eval "use subs 'die'";  # We override this and may also export it to caller
+}
 
 my %MailTo = (); # accumulates lists of users to mail various msgs to.
 
@@ -36,7 +39,7 @@ my %MailTo = (); # accumulates lists of users to mail various msgs to.
 # Else fall back to relying on PATH.
 sub ccpath {
     my $name = shift;
-    if (MSWIN) {
+    if (MSWIN()) {
 	return $name;	# no way to avoid relying on PATH in &^&@$! Windows
     } else {
 	return join('/', $ENV{ATRIAHOME} || q(/usr/atria), 'bin', $name);
@@ -52,7 +55,7 @@ sub ccpath {
 sub tempname {
     my($custom, $tmpf) = @_;
     # The preferred directory for temp files.
-    my $tmpd = MSWIN ?
+    my $tmpd = MSWIN() ?
 	    ($ENV{TEMP} || $ENV{TMP} || ( -d "$ENV{SYSTEMDRIVE}/temp" ?
 			      "$ENV{SYSTEMDRIVE}/temp" : $ENV{SYSTEMDRIVE})) :
 	    ($ENV{TMPDIR} || '/tmp');
@@ -101,8 +104,9 @@ sub clearprompt {
     # On Windows we must add an extra level of escaping to any args
     # which might have special chars since all forms of system()
     # appear to go through the %^%@# cmd shell (boo!).
-    if (MSWIN) {
-	for my $i (0..$#args) {
+    if (MSWIN()) {
+	for (0..$#args) {
+	    my $i = $_;
 	    if ($args[$i] =~ /^-(?:pro|ite|def|dfi|dir)/) {
 		$args[$i+1] =~ s/"/'/gs;
 		$args[$i+1] = qq("$args[$i+1]");
@@ -145,7 +149,7 @@ sub clearprompt {
 	    $? = 2 if $? == 0x400;  # see above
 	    $data = ($? && $? <= 0x80) ? undef : $?>>8;
 	} else {
-	    if (MSWIN) {
+	    if (MSWIN()) {
 		system(1, @cmd);
 		return;
 	    } else {
@@ -193,8 +197,9 @@ sub clearprompt_dir {
 	    $dir = File::Spec->rootdir;
 	    next;
 	}
-	if (MSWIN && $dir =~ m%^[A-Z]:[\\/]?$%i) {
-	    delete @subdirs{qw(. ..)};
+	if (MSWIN() && $dir =~ m%^[A-Z]:[\\/]?$%i) {
+	    delete $subdirs{'.'};
+	    delete $subdirs{'..'};
 	    @drives = grep {-e} map {"$_:"} 'C'..'Z' if !@drives;
 	    $items = join(',', @drives, sort keys %subdirs);
 	} else {
@@ -208,7 +213,7 @@ sub clearprompt_dir {
 	}
 	chomp $resp;
 	last if ! $resp || $resp eq '.';
-	if (MSWIN && $resp =~ m%^[A-Z]:[\\/]?$%i) {
+	if (MSWIN() && $resp =~ m%^[A-Z]:[\\/]?$%i) {
 	    $dir = $resp;
 	    chdir $dir || warn "$dir: $!\n";
 	} else {
@@ -231,8 +236,8 @@ sub redirect {
 	my $state  = shift;
 
 	if ($stream ne 'STDOUT' && $stream ne 'STDERR') {
-	print SAVE_STDERR "unrecognized stream $stream\n";
-	next;
+	    print SAVE_STDERR "unrecognized stream $stream\n";
+	    next;
 	}
 
 	if ($stream eq 'STDOUT') {
@@ -241,11 +246,9 @@ sub redirect {
 		    open(HIDE_STDOUT, '>&STDOUT')
 					    if !defined fileno(HIDE_STDOUT);
 		    close(STDOUT);
-		    select SAVE_STDOUT;
 		}
 	    } elsif ($state =~ /^ON$/i) {
 		open(STDOUT, '>&HIDE_STDOUT');
-		select STDOUT;
 	    } else {
 		if (defined fileno(STDOUT)) {
 		    open(HIDE_STDOUT, '>&STDOUT')
@@ -336,8 +339,8 @@ sub import {
     my %cmds = map {m%^.(\w+)=?(.*)%; $1 => $2 } grep /^\+/, @p;
 
     # If :tags were requested, map them to their predefined export lists.
-    for my $tag (@tags) {
-	no strict 'vars';
+    for (@tags) {
+	my $tag = $_;
 	next unless $EXPORT_TAGS{$tag};
 	for (@{$EXPORT_TAGS{$tag}}) {
 	    $exports{$_} = 1;
@@ -348,7 +351,22 @@ sub import {
     $exports{'die'} = 1 if exists $cmds{DIE};
 
     # Export the non-cmd symbols, which may include die().
-    __PACKAGE__->export_to_level(1, $p[0], grep {!/:/} keys %exports);
+    my @shares = grep {!/:/} keys %exports;
+    if ($] <= 5.001) {
+	# This weird hackery needed for ccperl (5.001) ...
+	my $caller = caller;
+	$caller = 'main' if $caller eq 'DB';	# hack for ccperl -d bug
+	for (@shares) {
+	    if (s/^(\W)//) {
+		eval "*{$caller\::$_} = \\$1$_";
+	    } else {
+		*{"$caller\::$_"} = \&$_;
+	    }
+	}
+    } else {
+	# ... and this "normal" hackery is for modern perls.
+	__PACKAGE__->export_to_level(1, $p[0], @shares);
+    }
 
     # Allow this EV to override the capture list.
     if ($ENV{CLEARCASE_CLEARPROMPT_CAPTURE_LIST}) {
@@ -436,7 +454,7 @@ sub import {
 		    # any asynchronous dialog boxes are still on the
 		    # screen due to threading/locking design, so we
 		    # give the user some time to read & close them.
-		    if (MSWIN) {
+		    if (MSWIN()) {
 			system(1, qq($^X -e "sleep 30; unlink '$tmpout'"));
 		    } else {
 			unlink($tmpout) || print "$prog: $tmpout: $!\n";
@@ -459,7 +477,7 @@ sub import {
 		    clearprompt(qw(proceed -type o -mask p -pref -pro), $title);
 		}
 		if (!$ENV{CLEARCASE_CLEARPROMPT_KEEP_CAPTURE}) {
-		    if (MSWIN) {
+		    if (MSWIN()) {
 			system(1, qq($^X -e "sleep 30; unlink '$tmperr'"));
 		    } else {
 			unlink($tmperr) || print "$prog: $tmperr: $!\n";
@@ -743,9 +761,9 @@ platforms to the address below.
 
 =head1 AUTHOR
 
-David Boyce <dsb@world.std.com>
+David Boyce <dsb@boyski.com>
 
-Copyright (c) 1999,2000 David Boyce. All rights reserved.  This Perl
+Copyright (c) 1999-2001 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute it and/or modify it
 under the same terms as Perl itself.
 
