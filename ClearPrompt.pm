@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.29';
+$VERSION = $VERSION = '1.31';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -44,11 +44,19 @@ sub rerun_in_debug_mode {
     delete $ENV{CLEARCASE_CLEARPROMPT_DEBUG};	# suppress recursion
     return if $ENV{PERL_DL_NONLAZY};		# marker for 'make test'
     my @cmd = ($^X, '-d', $0, @ARGV);
-    if ($ENV{ATRIA_FORCE_GUI}) {
-	unshift(@cmd, MSWIN() ? qw(start /wait) : qw(xterm -e));
+    if (MSWIN()) {
+	for (@cmd) {
+	    $_ = qq("$_") if m%\s%;
+	}
+	unshift(@cmd, qw(start /wait)) if $ENV{ATRIA_FORCE_GUI};
+    } else {
+	unshift(@cmd, qw(xterm -e)) if $ENV{ATRIA_FORCE_GUI};
     }
     if (MSWIN()) {
-	exit(system(@cmd) != 0);
+	# This does not work with ccperl (5.001) if CC is installed to
+	# "C:\Program Files\...".
+	my $rc = system(@cmd);
+	exit($rc != 0);
     } else {
 	exec(@cmd);
     }
@@ -382,7 +390,8 @@ sub sendmsg {
     }
 
     # If Net::SMTP isn't installed or didn't work, try notify.exe
-    my $notify = qq(notify -l triggers -s "$subj" ) .
+    my $nexe = MSWIN() ? 'notify' : '/usr/atria/bin/notify';
+    my $notify = qq($nexe -l triggers -s "$subj" ) .
 					    join(' ', map {qq("$_")} @$r_to);
     if (open(NOTIFY, "| $notify")) {
 	print NOTIFY @body;
@@ -986,8 +995,8 @@ If C</DEBUG> is specified, e.g.:
 
 Then the trigger script will run in a Perl debugger session.  If the
 trigger was fired from a GUI environment (Unix or Windows), the
-debugger session will run in a separate text window.  session. This
-same feature is available by setting the environment variable
+debugger session will run in a separate text window. This same feature
+is available by setting the environment variable
 
     export CLEARCASE_CLEARPROMPT_DEBUG=1
 
@@ -1078,7 +1087,7 @@ configured for network use, as described at http://www.cleartool.com/.
 
 =head1 AUTHOR
 
-David Boyce <dsb@boyski.com>
+David Boyce <dsbperl@cleartool.com>
 
 Copyright (c) 1999-2002 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute it and/or modify it

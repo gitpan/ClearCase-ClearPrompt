@@ -1,23 +1,25 @@
 # This script is useful for testing Net::SMTP configuration. If run with
 # no arguments, eg "perl smtp.pl", it will attempt to send mail from you
-# to you. You might want to "ping mailhost" since that's the default
+# to you. If this succeeds, you're probably good to go.
+# If not you may want to try "ping mailhost" since that's the default
 # SMTP server, and/or search for the file "libnet.cfg" in your perl
 # site/lib area and see what it thinks the SMTP server is.
-# Also, you may need to modify this script to qualify your email address
-# in the $smtp->to line with a domain name.
+# You can send to an explicit address by specifying it on the cmdline.
 
 use Net::SMTP;
 
 my $smtp = Net::SMTP->new;
-exit 2 unless defined $smtp;
-my $name = $ENV{CLEARCASE_USER}||$ENV{USERNAME}||$ENV{LOGNAME}||$ENV{USER};
+die "$0: Error: Net::SMTP may be mis-configured" unless defined $smtp;
+my $from = $ENV{CLEARCASE_USER}||$ENV{USERNAME}||$ENV{LOGNAME}||$ENV{USER};
+my $to = shift || $from;
 $smtp->debug(1);
-$smtp->mail($name) &&
-    $smtp->to($name, {SkipBad => 1}) &&
+$smtp->mail($from) &&
+    $smtp->to($to, {SkipBad => 1}) &&
     $smtp->data() &&
-    $smtp->datasend("To: $name\n") &&
+    $smtp->datasend("To: $to\n") &&
     $smtp->datasend("Subject: TESTING\n") &&
     $smtp->datasend("\n") &&
-    $smtp->datasend(@ARGV ? "@ARGV" : "testing ...") &&
+    $smtp->datasend("Test message ...") &&
     $smtp->dataend() &&
-    $smtp->quit;
+    $smtp->quit ||
+    die "$0: Error: Net::SMTP: $!";

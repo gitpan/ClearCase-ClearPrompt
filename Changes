@@ -94,3 +94,11 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 	  new CLEARCASE_CLEARPROMPT_GUI_DEBUG EV to
 	  CLEARCASE_CLEARPROMPT_DEBUG. It now forces debug mode even
 	  in a cmdline environment (but still works the same for GUI).
+	- Fixed quoting problem in CLEARCASE_CLEARPROMPT_DEBUG mode
+	  on Windows.
+
+1.30 Tue Oct  1 21:46:38 EDT 2002
+	- Removed a dependence on PATH on Unix.
+
+1.31 Tue Jul 22 10:38:44 EDT 2003
+	- Fixed contact data.
