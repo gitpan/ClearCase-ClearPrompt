@@ -36,11 +36,11 @@ if (! -d $cchome) {
    }
 }
 
-my $rc, $final;
+my($rc, $final);
 my @yes_no = qw(yes_no -pref -mask yes,no -type ok -prompt);
 
 ## Test 2
-my $msg2 = qq(A simple test of clearprompt(proceed ...));
+my $msg2 = qq(A simple test\n(of clearprompt proceed ...));
 $rc = clearprompt(qw(proceed -type ok -mask p -pref -pro), "$msg2");
 my $pre2 = qq(Test 2: Did you just see a dialog box saying '$msg2'?);
 $rc = clearprompt(@yes_no, $pre2);

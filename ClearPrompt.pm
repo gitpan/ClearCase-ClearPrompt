@@ -2,15 +2,15 @@ package ClearCase::ClearPrompt;
 
 require 5.004;
 
-use strict;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-require Exporter;
+$VERSION = '1.13';
 @ISA = qw(Exporter);
-$VERSION = '1.12';
 @EXPORT_OK = qw(clearprompt clearprompt_dir);
 %EXPORT_TAGS = ( 'all' => [@EXPORT_OK] );
 
-use constant MSWIN => $^O =~ /win32/i;
+use strict;
+require Exporter;
+
+use constant MSWIN	=> $^O =~ /MSWin32|Windows_NT/i;
 
 use Cwd;
 use File::Spec;
@@ -124,6 +124,7 @@ sub clearprompt_dir {
     my($dir, $msg) = @_;
     my(%subdirs, $items, @drives);
     my $iwd = getcwd;
+    $dir = $iwd if $dir eq '.';
     my @pref = $ENV{ATRIA_FORCE_GUI} ? ('-prefer_gui') : ();
 
     while (1) {
@@ -172,7 +173,7 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
 
 =head1 SYNOPSIS
 
-    use ClearCase::ClearPrompt qw(clearprompt);
+    use ClearCase::ClearPrompt qw(clearprompt clearprompt_dir);
 
     # boolean usage
     my $rc = clearprompt(qw(yes_no -mask y,n -type ok -prompt), 'Well?');
@@ -196,7 +197,7 @@ write into them, open them and read the data, then unlink them. In many
 cases this code must run seamlessly on both Unix and Windows systems
 and is replicated throughout many trigger scripts. ClearCase::ClearPrompt
 abstracts this dirty work without changing the interface to
-B<clearprompt> at all.
+B<clearprompt>.
 
 The C<clearprompt()> function takes the exact same set of flags as
 the eponymous ClearCase command, e.g.:
@@ -223,7 +224,8 @@ module provides a separate C<clearprompt_dir()> function which
 implements it via "clearprompt list" and C<opendir/readdir/closedir>.
 Usage is
 
-	$dir = clearprompt_dir($starting_dir, $prompt_string);
+    use ClearCase::ClearPrompt qw(clearprompt_dir);
+    $dir = clearprompt_dir($starting_dir, $prompt_string);
 
 This is a little awkward to use since it doesn't use a standard
 directory-chooser interface but it works. There's no way to create a
@@ -250,9 +252,9 @@ the address below.
 
 David Boyce <dsb@world.std.com>
 
-Copyright (c) 1999 David Boyce. All rights reserved.  This perl program
-is free software; you may redistribute it and/or modify it under the
-same terms as Perl itself.
+Copyright (c) 1999,2000 David Boyce. All rights reserved.  This Perl
+program is free software; you may redistribute it and/or modify it
+under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
