@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.001;
 
-$VERSION = $VERSION = '1.27';
+$VERSION = $VERSION = '1.28';
 @EXPORT_OK = qw(clearprompt clearprompt_dir redirect tempname die
 		$CT $TriggerSeries
 );
@@ -40,6 +40,7 @@ my %MailTo = (); # accumulates lists of users to mail various msgs to.
 sub gui_debug {
     # Re-exec ourself in a new window with debugging turned on. This
     # allows "perl -d" debugging of triggers running in a GUI env.
+    delete $ENV{CLEARCASE_CLEARPROMPT_GUI_DEBUG};	# suppress recursion
     my @cmd = ($^X, '-d', $0, @ARGV);
     if (MSWIN()) {
 	exit(system(qw(start /wait), @cmd) != 0);
