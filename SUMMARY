@@ -1,5 +1,0 @@
-This Perl module makes use of clearprompt(1) both simpler and more
-portable between UNIX/Windows.  It handles UNIX/NT quoting and path
-issues transparently, manages creation, reading, and deletion of temp
-files in text/list/file modes, and adds a clearprompt_dir() function to
-prompt for a directory.
