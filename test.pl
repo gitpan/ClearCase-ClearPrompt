@@ -74,7 +74,7 @@ my $msg6 = qq(Test 6: testing 'clearprompt(@test6 ...)'
    Please type some characters at the prompt:);
 my $data = clearprompt(@test6, $msg6);
 $data =~ s/"/'/g if $^O =~ /win32/i;
-print qq(At the previous prompt, you entered '$data'.\n);
+print qq(At the previous prompt you entered '$data'.\n);
 print ok(defined($data));
 
 exit ($final != 0);

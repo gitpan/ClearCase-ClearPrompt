@@ -23,3 +23,8 @@ Revision history for Perl extension ClearCase::ClearPrompt.
 1.13 Mon Apr 17 17:36:28 EDT 2000
 	- Minor cleanup work. Modified test #2 to demo prompts with
 	  embedded newlines.
+
+1.15 Sun Jun 25 19:25:56 EDT 2000
+	- Added verbosity option (undocumented).
+	- Removed unneeded -prefer_gui code in clearprompt_dir.
+

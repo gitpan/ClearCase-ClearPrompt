@@ -2,7 +2,7 @@ package ClearCase::ClearPrompt;
 
 require 5.004;
 
-$VERSION = '1.13';
+$VERSION = '1.15';
 @ISA = qw(Exporter);
 @EXPORT_OK = qw(clearprompt clearprompt_dir);
 %EXPORT_TAGS = ( 'all' => [@EXPORT_OK] );
@@ -53,7 +53,7 @@ sub tempname
 
 # Run clearprompt with specified args and return what it returned. Uses the
 # exact same syntax as the clearprompt executable ('ct man clearprompt')
-# except for the -outfile flag, which is handled internally here.
+# except for -outfile <file> which is handled internally here.
 sub clearprompt(@)
 {
    my $mode = shift;
@@ -86,7 +86,9 @@ sub clearprompt(@)
    if ($mode =~ /text|file|list/) {
       my $outf = tempname($mode);
       my $data;
-      if (!system($cpt, $mode, '-out', $outf, @args)) {
+      my @cmd = ($cpt, $mode, '-out', $outf, @args);
+      print STDERR "+ @cmd\n" if $ClearCase::ClearPrompt::Verbose;
+      if (!system(@cmd)) {
 	 if (open(OUTFILE, $outf)) {
 	    local $/ = undef;
 	    $data = <OUTFILE>;
@@ -96,23 +98,25 @@ sub clearprompt(@)
       } else {
 	 # If we took a signal, return undef with the signo in $?. The
 	 # clearprompt cmd apparently catches SIGINT and returns 0x400 for
-	 # some crazy reason; we fix it here so $? looks like a normal sig2.
-	 $? = 2 if $? == 0x400;  # see above
+	 # some reason; we fix it here so $? looks like a normal sig2.
+	 $? = 2 if $? == 0x400;
 	 $data = undef if $? && $? <= 0x80;
       }
       unlink $outf if -f $outf;
       return $data;
    } else {
+      my @cmd = ($cpt, $mode, @args);
+      print STDERR "+ @cmd\n" if $ClearCase::ClearPrompt::Verbose;
       if (defined wantarray) {
-	 system($cpt, $mode, @args);
+	 system(@cmd);
 	 $? = 2 if $? == 0x400;  # see above
 	 return ($? && $? <= 0x80) ? undef : $?>>8;
       } else {
 	 if (MSWIN) {
-	    system(1, $cpt, $mode, @args);
+	    system(1, @cmd);
 	 } else {
 	    return if fork;
-	    exec($cpt, $mode, @args);
+	    exec(@cmd);
 	 }
       }
    }
@@ -125,7 +129,6 @@ sub clearprompt_dir {
     my(%subdirs, $items, @drives);
     my $iwd = getcwd;
     $dir = $iwd if $dir eq '.';
-    my @pref = $ENV{ATRIA_FORCE_GUI} ? ('-prefer_gui') : ();
 
     while (1) {
 	if (opendir(DIR, $dir)) {
@@ -145,7 +148,7 @@ sub clearprompt_dir {
 	} else {
 	    $items = join(',', sort keys %subdirs);
 	}
-	my $resp = clearprompt(qw(list -items), $items, @pref,
+	my $resp = clearprompt(qw(list -items), $items,
 						    '-pro', "$msg  [ $dir ]");
 	if (!defined $resp) {
 	    undef $dir;
@@ -165,6 +168,7 @@ sub clearprompt_dir {
 }
 
 1;
+
 __END__
 
 =head1 NAME
@@ -179,7 +183,7 @@ ClearCase::ClearPrompt - Handle clearprompt in a portable, convenient way
     my $rc = clearprompt(qw(yes_no -mask y,n -type ok -prompt), 'Well?');
 
     # returns text into specified variable (context sensitive).
-    my $txt = clearprompt(qw(text -pref -prompt), 'Enter text data here');
+    my $txt = clearprompt(qw(text -pref -prompt), 'Enter text data here: ');
 
     # asynchronous usage - show dialog box and continue
     clearprompt(qw(proceed -mask p -type ok -prompt), "You said: $txt");
@@ -238,15 +242,15 @@ catches SIGINT (Ctrl-C) and provides a status of 4 rather than
 returning the signal number in C<$?> according to normal (UNIX) signal
 semantics.>  We fix that up here so it looks like a normal signal 2.
 Thus, if C<clearprompt()> returns undef the signal number is reliably
-in $? as it should be.
+in $? as it's documented to be.
 
 =head1 PORTING
 
-This package is known to work fine on Solaris 2.5.1/perl5.004_04 and
-Windows NT 4.0SP3/5.005_02.  As these two platforms are quite
-different, this should take care of any I<significant> portability
-issues, but please send reports of tweaks needed for other platforms to
-the address below.
+This package is known to work fine on Solaris 2.5.1/perl5.004_04,
+Solaris 7/perl5.6, and Windows NT 4.0SP3/5.005_02.  As these platforms
+are quite different, this should take care of any I<significant>
+portability issues but please send reports of tweaks needed for other
+platforms to the address below.
 
 =head1 AUTHOR
 
